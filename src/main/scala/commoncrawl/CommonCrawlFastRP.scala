@@ -39,8 +39,8 @@ object CommonCrawlFastRP {
       .take(10)
       .foreach(println)
 
-    val weights = Array(0.01, 0.05, 1.0, -1.0)//, 1.0, -1.0)
-    val fastrp10k = fastRP(graph10k, 8, weights)
+    val weights = Array(0.0, 0.0, 1.0, 1.0)
+    val fastrp10k = fastRP(graph10k, 32, weights)
 
     fastrp10k
       .vertices
@@ -79,14 +79,27 @@ object CommonCrawlFastRP {
       .lookup("com.mckinsey").head
     val query_vector5 = fastrp10k.vertices.lookup(query_id5).head
     query_knn(fastrp10k.vertices, graph10k.vertices, 15, query_vector5)
+
+    println("query6")
+    query_website("com.wikihow", graph10k.vertices, fastrp10k.vertices)
+    println("query7")
+    query_website("com.hardrock", graph10k.vertices, fastrp10k.vertices)
+    println("query8")
+    query_website("com.renegadehealth", graph10k.vertices, fastrp10k.vertices)
+    println("query9")
+    query_website("com.google", graph10k.vertices, fastrp10k.vertices)
+    println("query10")
+    query_website("se.aftonbladet", graph10k.vertices, fastrp10k.vertices)
   }
 
-  def query_website(site: String): Unit = {
+  def query_website(site: String,
+                    vertices: VertexRDD[String],
+                    fastRPvertices: VertexRDD[Array[Double]]): Unit = {
 
-//    val query_id = graph10k.vertices.map(_.swap)
-//      .lookup("nytimes.com ").head
-//    val query_vector = fastrp10k.vertices.lookup(query_id).head
-//    query_knn(fastrp10k.vertices, graph10k.vertices, 5, query_vector)
+    val query_id = vertices.map(_.swap)
+      .lookup(site).head
+    val query_vector = fastRPvertices.lookup(query_id).head
+    query_knn(fastRPvertices, vertices, 15, query_vector)
   }
 
   def classify_website(embeddings: VertexRDD[Array[Double]], websites: VertexRDD[String]): Unit = {

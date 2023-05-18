@@ -10,8 +10,8 @@ object CommonCrawlDatasets {
   val RANKS_PATH = "H:\\commoncrawl\\ranks.txt"
   val EDGES_PATH = "H:\\commoncrawl\\edges.txt"
   val VERTICES_PATH = "H:\\commoncrawl\\vertices.txt"
-  val save_path10k = "D:\\commoncrawl\\www10k\\"
-  val save_path200k = "D:\\commoncrawl\\www200k\\"
+  val save_path10k = "D:\\commoncrawl\\www10k_1\\"
+  val save_path200k = "D:\\commoncrawl\\www200k_1\\"
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
@@ -78,18 +78,6 @@ object CommonCrawlDatasets {
       edges.map(e => Edge(srcId = e.srcId, dstId = e.dstId, attr = 1.0)),
       defaultValue = "")
 
-    val filteredGraph = graph2
-      .filter(graph => {
-        val g = graph.outerJoinVertices(filtered_processed_vertices) {
-          (id, oldAttr, newAttr) => newAttr.getOrElse(oldAttr)
-        }
-        g
-      },
-        vpred = (_: VertexId, maybeString: String) => maybeString != "")
-
-    val filteredVertices = graph2.vertices.innerJoin(filtered_processed_vertices) {
-      (id, oldAttr, newAttr) => oldAttr
-    }
     val filtered_edges = edges
       .keyBy(e => e.srcId)
       .join(filtered_processed_vertices)
@@ -102,8 +90,7 @@ object CommonCrawlDatasets {
 
     val graph_edges = filtered_edges.map(e => Edge(srcId = e.srcId, dstId = e.dstId, attr = 1.0))
 
-//    val ccGraph = Graph(filtered_processed_vertices, graph_edges)
-    val ccGraph = filteredGraph
+    val ccGraph = Graph(filtered_processed_vertices, graph_edges)
       .filter(
         graph => {
           val degrees: VertexRDD[Int] = graph.degrees
