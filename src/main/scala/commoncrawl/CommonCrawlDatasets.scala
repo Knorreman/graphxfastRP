@@ -17,7 +17,7 @@ object CommonCrawlDatasets {
     val conf = new SparkConf()
       .setAppName("FastRPCommonCrawl")
       .setMaster("local[*]")
-      .set("spark.local.dir", "H:\\sparklocal\\")
+      .set("spark.local.dir", "D:\\sparklocal\\")
       .set("spark.driver.memory", "32g")
       .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")

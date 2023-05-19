@@ -17,8 +17,8 @@ object CommonCrawlFastRP {
   def main(args: Array[String]): Unit = {
     val conf = new SparkConf()
       .setAppName("FastRPCommonCrawl")
-      .setMaster("local[*]")
-      .set("spark.local.dir", "H:\\sparklocal\\")
+      .setMaster("local[8]")
+      .set("spark.local.dir", "D:\\sparklocal\\")
       .set("spark.driver.memory", "32g")
       .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -27,7 +27,7 @@ object CommonCrawlFastRP {
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
-    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path10k, numPartitions = 16)
+    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path200k, numPartitions = 32)
 
     println("www10k vertices:")
     println(graph10k.vertices.count())
@@ -39,8 +39,8 @@ object CommonCrawlFastRP {
       .take(10)
       .foreach(println)
 
-    val weights = Array(0.0, 0.0, 1.0, 1.0)
-    val fastrp10k = fastRP(graph10k, 32, weights)
+    val weights = Array(0.0, 1.0, 1.0)
+    val fastrp10k = fastRP(graph10k, 512, weights)
 
     fastrp10k
       .vertices
