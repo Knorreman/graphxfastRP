@@ -29,7 +29,7 @@ object FastRP {
         triplet => {
           triplet.sendToDst((triplet.srcAttr.map(_ * triplet.attr), 1))
         },
-        (a, b) => (a._1 + b._1, a._2 + b._2)
+        (a, b) => (addVectors(a._1, b._1), a._2 + b._2)
       )
 
       updatedGraph = updatedGraph.outerJoinVertices(msgs) {
@@ -102,8 +102,11 @@ object FastRP {
   }
 
   def normalize(v: SparseVector[Double]): SparseVector[Double] = {
-    val norm = math.sqrt(v.map(x => x * x).reduce(_ + _))
-    if (norm == 0) v else v.map(x => x / norm)
+//    val v_norm = breeze.linalg.norm(v)
+//    v / v_norm
+//    val norm = math.sqrt(v.map(x => x * x).reduce(_ + _))
+//    if (v_norm == 0) v else v / v_norm
+    breeze.linalg.normalize(v)
   }
 
   def addVectors(a: Array[Double], b: Array[Double]): Array[Double] = {
