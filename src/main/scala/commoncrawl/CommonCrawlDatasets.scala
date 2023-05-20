@@ -10,15 +10,17 @@ object CommonCrawlDatasets {
   val RANKS_PATH = "H:\\commoncrawl\\ranks.txt"
   val EDGES_PATH = "H:\\commoncrawl\\edges.txt"
   val VERTICES_PATH = "H:\\commoncrawl\\vertices.txt"
-  val save_path10k = "D:\\commoncrawl\\www10k_1\\"
-  val save_path200k = "D:\\commoncrawl\\www200k_1\\"
+  val save_path10k = "D:\\commoncrawl\\www10k_3\\"
+  val save_path200k = "D:\\commoncrawl\\www200k_3\\"
+  val save_path500k = "D:\\commoncrawl\\www500k_3\\"
+  val save_path1m = "D:\\commoncrawl\\www1m_3\\"
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
       .setAppName("FastRPCommonCrawl")
-      .setMaster("local[*]")
+      .setMaster("local[8]")
       .set("spark.local.dir", "D:\\sparklocal\\")
-      .set("spark.driver.memory", "32g")
+      .set("spark.driver.memory", "16g")
       .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[Ranks], classOf[CommonCrawlVertices], classOf[CommonCrawlEdges]))
@@ -28,13 +30,13 @@ object CommonCrawlDatasets {
 
     println("Creating 10k subset")
     sc.setJobDescription("Creating 10k subset")
-    val ccGraph10k = create_subset(sc, hc_limit = 10000)
+    val ccGraph10k = create_subset(sc, hc_limit = 10_000)
 
     println("Num Vertices 10k:")
     println(ccGraph10k.vertices.count())
 
     println("Num edges 10k:")
-    println(ccGraph10k.edges.count() + " " + ccGraph10k.edges.count()/2)
+    println(ccGraph10k.edges.count())
 
     println("Saving WWW-10K graph")
     sc.setJobDescription("Saving WWW-10K graph")
@@ -44,19 +46,51 @@ object CommonCrawlDatasets {
 
     println("Creating 200k subset")
     sc.setJobDescription("Creating 200k subset")
-    val ccGraph200k = create_subset(sc, hc_limit = 200000)
+    val ccGraph200k = create_subset(sc, hc_limit = 200_000)
 
     println("Num Vertices 200k:")
     println(ccGraph200k.vertices.count())
 
     println("Num edges 200k:")
-    println(ccGraph200k.edges.count() + " " + ccGraph200k.edges.count()/2)
+    println(ccGraph200k.edges.count())
 
     println("Saving WWW-200K graph")
     sc.setJobDescription("Saving WWW-200K graph")
     save_graph(ccGraph200k, save_path200k)
 
     sc.getPersistentRDDs.foreach{ case (_, rdd) => rdd.unpersist(true) }
+
+    println("Creating 500k subset")
+    sc.setJobDescription("Creating 500k subset")
+    val ccGraph500k = create_subset(sc, hc_limit = 500_000)
+
+    println("Num Vertices 500k:")
+    println(ccGraph500k.vertices.count())
+
+    println("Num edges 500k:")
+    println(ccGraph500k.edges.count())
+
+    println("Saving WWW-500K graph")
+    sc.setJobDescription("Saving WWW-500K graph")
+    save_graph(ccGraph500k, save_path500k)
+
+    sc.getPersistentRDDs.foreach { case (_, rdd) => rdd.unpersist(true) }
+
+    println("Creating 1M subset")
+    sc.setJobDescription("Creating 1m subset")
+    val ccGraph1m = create_subset(sc, hc_limit = 1_000_000)
+
+    println("Num Vertices 1m:")
+    println(ccGraph1m.vertices.count())
+
+    println("Num edges 1m:")
+    println(ccGraph1m.edges.count())
+
+    println("Saving WWW-1M graph")
+    sc.setJobDescription("Saving WWW-1M graph")
+    save_graph(ccGraph1m, save_path1m)
+
+    sc.getPersistentRDDs.foreach { case (_, rdd) => rdd.unpersist(true) }
 
     sc.stop()
   }
@@ -88,7 +122,9 @@ object CommonCrawlDatasets {
       .values
       .map(tpl => tpl._1)
 
-    val graph_edges = filtered_edges.map(e => Edge(srcId = e.srcId, dstId = e.dstId, attr = 1.0))
+    val graph_edges = filtered_edges
+      .map(e => Edge(srcId = e.srcId, dstId = e.dstId, attr = 1.0))
+      .distinct()
 
     val ccGraph = Graph(filtered_processed_vertices, graph_edges)
       .filter(
@@ -150,7 +186,8 @@ object CommonCrawlDatasets {
     val vertices = sc.objectFile[(VertexId, VD)](path + "\\vertices\\")
     val edges = sc.objectFile[Edge[ED]](path + "\\edges\\")
 
-    Graph(vertices.repartition(numPartitions), edges.repartition(numPartitions))
+    Graph(vertices.distinct(numPartitions), edges.distinct(numPartitions))
+      .partitionBy(PartitionStrategy.EdgePartition2D)
   }
 
 }

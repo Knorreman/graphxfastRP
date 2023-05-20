@@ -1,60 +1,54 @@
 package fastp
 
-import breeze.linalg.{SparseVector, DenseVector}
+import breeze.linalg.{DenseVector, SparseVector, Vector}
 import breeze.numerics.sqrt
-import org.apache.spark.graphx.{EdgeContext, Graph, VertexId, VertexRDD}
+import breeze.stats.distributions.{Gaussian, RandBasis}
+import org.apache.spark.graphx.{EdgeContext, Graph, TripletFields, VertexId, VertexRDD}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 
 object FastRP {
-  def fastRP[A](graph: Graph[A, ?], dimensions: Int, weights: Array[Double]): Graph[Array[Double], ?] = {
-    val sparsity = 3
+  def fastRP[A](graph: Graph[A, ?], dimensions: Int, weights: Array[Double], sparsity: Int = 3, r0: Double = 0.0): Graph[Array[Double], ?] = {
     val coeff = math.sqrt(sparsity)
 
     var updatedGraph = graph.mapVertices((id, _) => {
-      val random = new Random()
+      val random = new Random(id)
 //      val seeds = (1 to dimensions).map(_ => random.nextGaussian()).toArray
-//      val seeds = generateSparseSeed(dimensions, coeff, sparsity, random)
       val seeds = generateSparseSeedBreeze(dimensions, coeff, sparsity, random)
+//      val seeds = generateDenseSeedBreeze(dimensions, coeff, sparsity, random)
 
       normalize(seeds)
     }).mapEdges(_ => 1.0)
 
-    val e = ArrayBuffer[(Graph[SparseVector[Double], ?], Double)]()
-//    val tmp_tpl = (updatedGraph, 1.0)
-//    e += tmp_tpl
+    val e = ArrayBuffer[(Graph[Vector[Double], ?], Double)]()
+    // Add source vector weight
+    if (r0 != 0.0) {
+      val g_tmp = graph.mapVertices((_, attr ) => attr.asInstanceOf[Vector[Double]])
+
+      val tmp_tpl = (g_tmp, r0)
+      e += tmp_tpl
+    }
+    // Begin iterations
     for (i <- weights.indices) {
-      val msgs: VertexRDD[(SparseVector[Double], Int)] = updatedGraph.aggregateMessages[(SparseVector[Double], Int)](
+      val msgs: VertexRDD[(Vector[Double], Double)] = updatedGraph.aggregateMessages[(Vector[Double], Double)](
         triplet => {
-          triplet.sendToDst((triplet.srcAttr.map(_ * triplet.attr), 1))
+          triplet.sendToDst((triplet.srcAttr * triplet.attr, 1.0))
         },
-        (a, b) => (addVectors(a._1, b._1), a._2 + b._2)
+        (a, b) => (addVectors(a._1, b._1), a._2 + b._2),
+        tripletFields = TripletFields.Src
       )
 
       updatedGraph = updatedGraph.outerJoinVertices(msgs) {
-        case (_, _, Some(msg)) => msg._1.map((x => x / msg._2))
+        case (_, _, Some(msg)) => msg._1 / msg._2
         case (_, embedding, None) => embedding
       }
-
-      val tmp_tpl = (updatedGraph, weights(i))
-      e += tmp_tpl
+      val wi = weights(i)
+      if (wi != 0.0) {
+        val tmp_tpl = (updatedGraph, weights(i))
+        e += tmp_tpl
+      }
     }
-//
-//    e(0)._1.vertices
-//      .filter(v => v._1==352666384)
-//      .mapValues(x => x.mkString("Array(", ", ", ")"))
-//      .take(1).foreach(println)
-//
-//    e(1)._1.vertices
-//      .filter(v => v._1 == 352666384)
-//      .mapValues(x => x.mkString("Array(", ", ", ")"))
-//      .take(1).foreach(println)
-//
-//    e(2)._1.vertices
-//      .filter(v => v._1 == 352666384)
-//      .mapValues(x => x.mkString("Array(", ", ", ")"))
-//      .take(1).foreach(println)
 
     val result = e.map(tpl => tpl._1.mapVertices((_, arr) => multiplyVectorByScalar(normalize(arr), tpl._2)))
       .reduce((g1, g2) => {
@@ -101,11 +95,7 @@ object FastRP {
     if (norm == 0) v else v.map(x => x / norm)
   }
 
-  def normalize(v: SparseVector[Double]): SparseVector[Double] = {
-//    val v_norm = breeze.linalg.norm(v)
-//    v / v_norm
-//    val norm = math.sqrt(v.map(x => x * x).reduce(_ + _))
-//    if (v_norm == 0) v else v / v_norm
+  def normalize(v: Vector[Double]): Vector[Double] = {
     breeze.linalg.normalize(v)
   }
 
@@ -113,7 +103,7 @@ object FastRP {
     a.zip(b).map { case (x, y) => x + y }
   }
 
-  def addVectors(a: SparseVector[Double], b: SparseVector[Double]): SparseVector[Double] = {
+  def addVectors(a: Vector[Double], b: Vector[Double]): Vector[Double] = {
     a + b
   }
 
@@ -121,7 +111,7 @@ object FastRP {
     v.map(x => x * scalar)
   }
 
-  def multiplyVectorByScalar(v: SparseVector[Double], scalar: Double): SparseVector[Double] = {
+  def multiplyVectorByScalar(v: Vector[Double], scalar: Double): Vector[Double] = {
     v * scalar
   }
 
@@ -146,11 +136,7 @@ object FastRP {
 
 
   def generateDenseSeedBreeze(dimensions: Int, coeff: Double, sparsity: Int, random: Random): DenseVector[Double] = {
-    val vec = DenseVector.zeros[Double](dimensions)
-    (0 until dimensions).foreach { i =>
-      val r = random.nextGaussian()
-      vec(i) = r
-    }
+    val vec = DenseVector.rand[Double](dimensions, Gaussian(0, 1)(rand = RandBasis.withSeed(random.nextInt())))
     vec
   }
 
