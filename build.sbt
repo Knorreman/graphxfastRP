@@ -7,6 +7,7 @@ libraryDependencies += "org.apache.spark" %% "spark-graphx" % "3.4.0"
 libraryDependencies += "org.apache.spark" %% "spark-mllib" % "3.4.0"
 libraryDependencies += "org.scalanlp" %% "breeze" % "2.1.0"
 
+scalacOptions ++= Seq("-deprecation", "-feature")
 
 lazy val root = (project in file("."))
   .settings(

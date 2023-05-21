@@ -26,7 +26,7 @@ object FastRP {
     if (r0 != 0.0) {
       val g_tmp = graph.mapVertices((_, attr ) => attr.asInstanceOf[Vector[Double]])
 
-      val tmp_tpl = (g_tmp, r0)
+      val tmp_tpl: (Graph[Vector[Double], ?], Double) = (g_tmp, r0)
       e += tmp_tpl
     }
     // Begin iterations
