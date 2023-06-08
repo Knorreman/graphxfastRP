@@ -182,12 +182,14 @@ object CommonCrawlDatasets {
     graph.edges.saveAsObjectFile(path + "\\edges")
   }
 
-  def load_graph[VD: ClassTag, ED: ClassTag](sc: SparkContext, path: String, numPartitions: Int = 128): Graph[VD, ED] = {
+  def load_graph[VD: ClassTag, ED: ClassTag](sc: SparkContext, path: String, numPartitions: Int = 128, undirected: Boolean = true): Graph[VD, ED] = {
     val vertices = sc.objectFile[(VertexId, VD)](path + "\\vertices\\")
-    val edges = sc.objectFile[Edge[ED]](path + "\\edges\\")
-
-    Graph(vertices.distinct(numPartitions), edges.distinct(numPartitions))
-      .partitionBy(PartitionStrategy.EdgePartition2D)
+    var edges = sc.objectFile[Edge[ED]](path + "\\edges\\")
+    if (undirected) {
+      edges = edges.union(edges.map(e => Edge(e.dstId, e.srcId, e.attr)))
+    }
+    Graph(vertices.repartition(numPartitions), edges.repartition(numPartitions))
+      .partitionBy(PartitionStrategy.EdgePartition2D, numPartitions)
   }
 
 }
