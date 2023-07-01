@@ -67,7 +67,7 @@ object Main {
 //      .take(20)
 //      .foreach(println)
 
-    val weights = Array(0.0, 0.0, 1.0, 1.0)
+    val weights = Array(0.0f, 0.0f, 1.0f, 1.0f)
     val twRPGraph = fastRP(tw_graph, 32, weights)
 
     twRPGraph.vertices
@@ -82,7 +82,7 @@ object Main {
 
 
 
-  def load_twitch_edges(sc: SparkContext): Graph[Double, Int] = {
+  def load_twitch_edges(sc: SparkContext): Graph[Float, Int] = {
     val path = "D:\\ChromeDownloads\\twitch_gamers\\large_twitch_edges.csv"
 
     val edges = sc.textFile(path, sc.defaultParallelism)
@@ -93,7 +93,7 @@ object Main {
         val spl = x.split(",")
         Edge(spl(0).toLong, spl(1).toLong, 1)
       })
-    Graph.fromEdges(edges, defaultValue = 1.0)
+    Graph.fromEdges(edges, defaultValue = 1.0f)
   }
 
   def load_twitch_features(sc: SparkContext): RDD[TwitchFeatures] = {
@@ -116,11 +116,11 @@ object Main {
     def englishOrNot: Int = if (language=="EN") 1 else 0
   }
 
-  def classify_twitch_vertices(vertices: VertexRDD[Array[Double]], twitchFeatures: RDD[TwitchFeatures]) : Unit = {
+  def classify_twitch_vertices(vertices: VertexRDD[Array[Float]], twitchFeatures: RDD[TwitchFeatures]) : Unit = {
     val idTarget: RDD[(Long, Int)] = twitchFeatures.keyBy(t => t.numeric_id).mapValues(t => t.affiliate)
 
     val data: RDD[(VertexId, LabeledPoint)] = vertices.join(idTarget)
-      .mapValues(tpl => LabeledPoint(tpl._2.toDouble, Vectors.dense(tpl._1)))
+      .mapValues(tpl => LabeledPoint(tpl._2.toFloat, Vectors.dense(tpl._1.map(_.toDouble))))
 
     classify(data)
     }
@@ -148,7 +148,7 @@ object Main {
     val s = scaledData
       .keyBy(x => x._2.label)
       .countByKey()
-      .map(dl => (dl._1, dl._2.toDouble / dataCount))
+      .map(dl => (dl._1, dl._2.toFloat / dataCount))
 
 
     val splits = scaledData
