@@ -42,17 +42,17 @@ object CommonCrawlFastRP {
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
-    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path10k, numPartitions = 12)
+    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path200k, numPartitions = 12)
 
     println("www10k vertices:")
     println(graph10k.vertices.count())
     println("www10k edges:")
     println(graph10k.edges.count())
 
-    val weights = Array(0.0, 0.0, 1.0, 1.0)
-    val fastRP10k = fastRP(graph10k, 256, weights)
+    val weights = Array(0.0f, 0.0f, 1.0f, 0.0f, 1.0f)
+    val fastRP10k = fastRP(graph10k, 128, weights)
 
-    val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2)))
+    val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2.map(_.toDouble))))
     println(stats.max.toString)
     println(stats.min.toString)
     println(stats.variance.toString)
@@ -62,8 +62,8 @@ object CommonCrawlFastRP {
     val statsBc = sc.broadcast(stats)
 
     val normedVertexVectors = fastRP10k
-      .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_)))
-      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2)))
+      .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_.toFloat)))
+      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2).toFloat))
 
     normedVertexVectors
       .vertices
@@ -74,7 +74,7 @@ object CommonCrawlFastRP {
     val dCount = normedVertexVectors.vertices.map(_._2.toSeq).distinct().count()
     println("distinct arrays " + dCount)
 
-    val lsh = random_project(normedVertexVectors.vertices, 69)
+    val lsh = random_project(normedVertexVectors.vertices, 16).mapValues(_.map(_.toFloat))
 
     val bucketCount = lsh
       .keyBy(_._2.toSeq)
@@ -113,7 +113,7 @@ object CommonCrawlFastRP {
 //    query_all_websites(graph10k.vertices, fastRP10k.vertices, 5)
 //    System.exit(0)
 
-    classify_website(normedVertexVectors.vertices, graph10k.vertices)
+    classify_website(normedVertexVectors.vertices.mapValues(_.map(_.toDouble)), graph10k.vertices)
 
     println("query")
     val query_id = graph10k.vertices.map(_.swap)
@@ -211,7 +211,7 @@ object CommonCrawlFastRP {
 
   def query_website(site: String,
                     vertices: VertexRDD[String],
-                    fastRPvertices: VertexRDD[Array[Double]]): Unit = {
+                    fastRPvertices: VertexRDD[Array[Float]]): Unit = {
 
     val query_id = vertices.map(_.swap)
       .lookup(site).head
@@ -351,7 +351,7 @@ object CommonCrawlFastRP {
 
   }
 
-  def random_project(vecRdd: RDD[(VertexId, Array[Double])], n_ht: Int = 10): RDD[(VertexId, Array[Double])] = {
+  def random_project(vecRdd: RDD[(VertexId, Array[Float])], n_ht: Int = 10): RDD[(VertexId, Array[Double])] = {
 
     val arrLength = vecRdd.first()._2.length
     val rand = new Random(arrLength + 1)
@@ -370,13 +370,14 @@ object CommonCrawlFastRP {
 
     val r = 2.0
     vecRdd
+      .mapValues(_.map(_.toDouble))
       .mapValues(v => matrix_vector_multiplication_add_vector(matrixBc.value, n_ht, arrLength, v, bVectorBc.value))
       .mapValues(v => v.map(_ / r).map(Math.floor))
   }
 
-  def matrix_vector_multiplication_add_vector(matrix: Array[Double], rows: Int, cols: Int,
-                                   vectorx: Array[Double],
-                                   vectory: Array[Double]): Array[Double] = {
+  private def matrix_vector_multiplication_add_vector(matrix: Array[Double], rows: Int, cols: Int,
+                                                      vectorx: Array[Double],
+                                                      vectory: Array[Double]): Array[Double] = {
 
     val vectorycopy = vectory.clone()
 
