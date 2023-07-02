@@ -1,15 +1,12 @@
 package commoncrawl
 
-import breeze.linalg.{*, DenseMatrix, DenseVector, InjectNumericOps, Matrix}
-import breeze.numerics.{floor, round}
-import breeze.optimize.DiffFunction.castOps
-import breeze.stats.distributions.{Gaussian, RandBasis, Uniform}
 import commoncrawl.CommonCrawlDatasets.{CommonCrawlEdges, CommonCrawlVertices, Ranks, save_path10k, save_path1m, save_path200k, save_path500k}
 import dev.ludovic.netlib.blas.BLAS
-import fastp.FastRP.{addVectors, cosineDistance, fastRP, normalize, query_knn}
+import fastp.FastRP.{FastRPMessage, FastRPVertex, addVectors, cosineDistance, fastRP, query_knn}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{Graph, VertexId, VertexRDD}
-import org.apache.spark.mllib.classification.{LogisticRegressionWithLBFGS, SVMModel, SVMWithSGD}
+import org.apache.spark.mllib.classification.SVMWithSGD
+import org.apache.spark.mllib.clustering.{BisectingKMeans, DistanceMeasure}
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.feature.StandardScaler
 import org.apache.spark.mllib.linalg.Vectors
@@ -17,10 +14,8 @@ import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.stat.Statistics
 import org.apache.spark.mllib.tree.RandomForest
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.ArrayFilter
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{SparkConf, SparkContext}
-//import org.apache.spark.ml.linalg.BLAS
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
@@ -37,20 +32,24 @@ object CommonCrawlFastRP {
       .set("spark.driver.memory", "32g")
       .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .registerKryoClasses(Array(classOf[Ranks], classOf[CommonCrawlVertices], classOf[CommonCrawlEdges], classOf[Array[Double]]))
+      .registerKryoClasses(Array(classOf[Ranks], classOf[CommonCrawlVertices], classOf[CommonCrawlEdges], classOf[Array[Double]],
+        classOf[FastRPVertex], classOf[FastRPMessage]))
 
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
-    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path200k, numPartitions = 12)
+    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path10k, numPartitions = 32)
 
     println("www10k vertices:")
     println(graph10k.vertices.count())
     println("www10k edges:")
     println(graph10k.edges.count())
 
-    val weights = Array(0.0f, 0.0f, 1.0f, 0.0f, 1.0f)
-    val fastRP10k = fastRP(graph10k, 128, weights)
+    val weights = Array(0.0, 0.1, 1.0, 1.0, 0.25)
+    val fastRP10k: Graph[Array[Double], Double] = fastRP(graph10k, 512, weights).cache()
+
+    println("counting fastRP vertices")
+    fastRP10k.vertices.count()
 
     val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2.map(_.toDouble))))
     println(stats.max.toString)
@@ -63,155 +62,81 @@ object CommonCrawlFastRP {
 
     val normedVertexVectors = fastRP10k
       .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_.toFloat)))
-      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2).toFloat))
+      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2))).vertices
 
     normedVertexVectors
-      .vertices
       .mapValues(x => x.mkString("Array(", ", ", ")"))
       .take(10)
       .foreach(println)
 
-    val dCount = normedVertexVectors.vertices.map(_._2.toSeq).distinct().count()
+    val dCount = normedVertexVectors.map(_._2.toSeq).distinct().count()
     println("distinct arrays " + dCount)
 
-    val lsh = random_project(normedVertexVectors.vertices, 16).mapValues(_.map(_.toFloat))
-
-    val bucketCount = lsh
-      .keyBy(_._2.toSeq)
-      .mapValues(_ => 1)
-      .reduceByKey(_ + _)
-      .count()
-
-    println("BucketCount " + bucketCount)
-
-    lsh
-      .keyBy(_._2.toSeq)
-      .mapValues(_ => 1)
-      .reduceByKey(_ + _)
-      .sortBy(t => t._2, ascending = false)
-      .take(20)
-      .foreach(println)
-
-//    val bkm = new BisectingKMeans()
-//    bkm.setK(fastRP10k.vertices.count().toInt)
-//    bkm.setDistanceMeasure(DistanceMeasure.EUCLIDEAN)
-//    bkm.setMaxIterations(3)
-//    bkm.setSeed(42L)
-//
-//    val bkmModel = bkm.run(fastRP10k.vertices.map(v => Vectors.dense(v._2)))
-//    println("number of centers: " + bkmModel.clusterCenters.length)
-//    fastRP10k.vertices
-//      .join(graph10k.vertices)
-//      .map(t => (t._2._2, t._2._1))
-//      .map(v => (bkmModel.predict(Vectors.dense(v._2)), Array(v._1)))
-//      .reduceByKey(_++_)
-//      .sortBy(t => t._2.length, ascending = false)
-//      .mapValues(x => x.mkString("Array(", ", ", ")"))
-//      .take(20)
-//      .foreach(println)
-
-//    query_all_websites(graph10k.vertices, fastRP10k.vertices, 5)
-//    System.exit(0)
-
-    classify_website(normedVertexVectors.vertices.mapValues(_.map(_.toDouble)), graph10k.vertices)
+    classify_website(normedVertexVectors.mapValues(_.map(_.toDouble)), graph10k.vertices)
 
     println("query")
     val query_id = graph10k.vertices.map(_.swap)
       .lookup("com.nytimes").head
-    val query_vector = normedVertexVectors.vertices.lookup(query_id).head
-    query_knn(normedVertexVectors.vertices, graph10k.vertices, 10, query_vector)
-
-    println("query_lsh")
-    val query_id_lsh = graph10k.vertices.map(_.swap)
-      .lookup("com.nytimes").head
-    val query_vector_lsh = lsh.mapValues(_.toArray).lookup(query_id_lsh).head
-    query_knn(VertexRDD(lsh.mapValues(_.toArray)), graph10k.vertices, 10, query_vector_lsh)
+    val query_vector = normedVertexVectors.lookup(query_id).head
+    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector)
 
     println("query2")
     val query_id2 = graph10k.vertices.map(_.swap)
       .lookup("com.arsenal").head
-    val query_vector2 = normedVertexVectors.vertices.lookup(query_id2).head
-    query_knn(normedVertexVectors.vertices, graph10k.vertices, 10, query_vector2)
-
-    println("query_lsh2")
-    val query_id_lsh2 = graph10k.vertices.map(_.swap)
-      .lookup("com.arsenal").head
-    val query_vector_lsh2 = lsh.mapValues(_.toArray).lookup(query_id_lsh2).head
-    query_knn(VertexRDD(lsh.mapValues(_.toArray)), graph10k.vertices, 10, query_vector_lsh2)
-
+    val query_vector2 = normedVertexVectors.lookup(query_id2).head
+    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector2)
 
     println("query3")
     val query_id3 = graph10k.vertices.map(_.swap)
       .lookup("com.delta").head
-    val query_vector3 = fastRP10k.vertices.lookup(query_id3).head
-    query_knn(fastRP10k.vertices, graph10k.vertices, 10, query_vector3)
-
-    println("query_lsh3")
-    val query_id_lsh3 = graph10k.vertices.map(_.swap)
-      .lookup("com.delta").head
-    val query_vector_lsh3 = lsh.mapValues(_.toArray).lookup(query_id_lsh3).head
-    query_knn(VertexRDD(lsh.mapValues(_.toArray)), graph10k.vertices, 10, query_vector_lsh3)
+    val query_vector3 = normedVertexVectors.lookup(query_id3).head
+    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector3)
 
     println("query4")
     val query_id4 = graph10k.vertices.map(_.swap)
       .lookup("com.latimes").head
-    val query_vector4 = fastRP10k.vertices.lookup(query_id4).head
-    query_knn(fastRP10k.vertices, graph10k.vertices, 10, query_vector4)
-
-    println("query_lsh4")
-    val query_id_lsh4 = graph10k.vertices.map(_.swap)
-      .lookup("com.latimes").head
-    val query_vector_lsh4 = lsh.mapValues(_.toArray).lookup(query_id_lsh4).head
-    query_knn(VertexRDD(lsh.mapValues(_.toArray)), graph10k.vertices, 10, query_vector_lsh4)
+    val query_vector4 = normedVertexVectors.lookup(query_id4).head
+    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector4)
 
     println("query5")
     val query_id5 = graph10k.vertices.map(_.swap)
       .lookup("com.mckinsey").head
-    val query_vector5 = fastRP10k.vertices.lookup(query_id5).head
-    query_knn(fastRP10k.vertices, graph10k.vertices, 10, query_vector5)
+    val query_vector5 = normedVertexVectors.lookup(query_id5).head
+    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector5)
 
-    println("query_lsh5")
-    val query_id_lsh5 = graph10k.vertices.map(_.swap)
-      .lookup("com.mckinsey").head
-    val query_vector_lsh5 = lsh.mapValues(_.toArray).lookup(query_id_lsh5).head
-    query_knn(VertexRDD(lsh.mapValues(_.toArray)), graph10k.vertices, 10, query_vector_lsh5)
-
-    System.exit(0)
     println("query6")
-    query_website("com.wikihow", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.wikihow", graph10k.vertices, normedVertexVectors)
     println("query7")
-    query_website("com.hardrock", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.hardrock", graph10k.vertices, normedVertexVectors)
     println("query8")
-    query_website("com.renegadehealth", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.renegadehealth", graph10k.vertices, normedVertexVectors)
     println("query9")
-    query_website("com.google", graph10k.vertices, fastRP10k.vertices)
-    println("query10")
-    query_website("se.aftonbladet", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.google", graph10k.vertices, normedVertexVectors)
     println("query11")
-    query_website("org.python", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.python", graph10k.vertices, normedVertexVectors)
     println("query12")
-    query_website("com.twitter", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.twitter", graph10k.vertices, normedVertexVectors)
     println("query13")
-    query_website("org.4chan", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.4chan", graph10k.vertices, normedVertexVectors)
     println("query14")
-    query_website("com.apple", graph10k.vertices, fastRP10k.vertices)
+    query_website("com.apple", graph10k.vertices, normedVertexVectors)
     println("query10")
-    query_website("org.scala-lang", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.scala-lang", graph10k.vertices, normedVertexVectors)
     println("query16")
-    query_website("org.apache.spark", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.apache.spark", graph10k.vertices, normedVertexVectors)
     println("query17")
-    query_website("org.scikit-learn", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.scikit-learn", graph10k.vertices, normedVertexVectors)
     println ("query18")
-    query_website("org.tensorflow", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.tensorflow", graph10k.vertices, normedVertexVectors)
     println("query19")
-    query_website("org.pytorch", graph10k.vertices, fastRP10k.vertices)
+    query_website("org.pytorch", graph10k.vertices, normedVertexVectors)
 
 
   }
 
   def query_website(site: String,
                     vertices: VertexRDD[String],
-                    fastRPvertices: VertexRDD[Array[Float]]): Unit = {
+                    fastRPvertices: VertexRDD[Array[Double]]): Unit = {
 
     val query_id = vertices.map(_.swap)
       .lookup(site).head
