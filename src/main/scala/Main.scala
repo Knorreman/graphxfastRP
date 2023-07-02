@@ -28,6 +28,7 @@ object Main {
 
     val tw_graph = load_twitch_edges(sc)
       .partitionBy(PartitionStrategy.RandomVertexCut)
+      .mapEdges(e => e.attr.toDouble)
 
     tw_graph.vertices.take(10).foreach(println)
     println("num vertices:")
@@ -67,7 +68,7 @@ object Main {
 //      .take(20)
 //      .foreach(println)
 
-    val weights = Array(0.0f, 0.0f, 1.0f, 1.0f)
+    val weights = Array(0.0, 0.0, 1.0, 1.0)
     val twRPGraph = fastRP(tw_graph, 32, weights)
 
     twRPGraph.vertices
@@ -116,11 +117,11 @@ object Main {
     def englishOrNot: Int = if (language=="EN") 1 else 0
   }
 
-  def classify_twitch_vertices(vertices: VertexRDD[Array[Float]], twitchFeatures: RDD[TwitchFeatures]) : Unit = {
+  def classify_twitch_vertices(vertices: VertexRDD[Array[Double]], twitchFeatures: RDD[TwitchFeatures]) : Unit = {
     val idTarget: RDD[(Long, Int)] = twitchFeatures.keyBy(t => t.numeric_id).mapValues(t => t.affiliate)
 
     val data: RDD[(VertexId, LabeledPoint)] = vertices.join(idTarget)
-      .mapValues(tpl => LabeledPoint(tpl._2.toFloat, Vectors.dense(tpl._1.map(_.toDouble))))
+      .mapValues(tpl => LabeledPoint(tpl._2.toFloat, Vectors.dense(tpl._1)))
 
     classify(data)
     }

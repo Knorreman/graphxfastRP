@@ -2,6 +2,7 @@ package commoncrawl
 
 import org.apache.spark.graphx._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{SparkConf, SparkContext}
 
 import scala.reflect.ClassTag
@@ -10,15 +11,16 @@ object CommonCrawlDatasets {
   val RANKS_PATH = "H:\\commoncrawl\\ranks.txt"
   val EDGES_PATH = "H:\\commoncrawl\\edges.txt"
   val VERTICES_PATH = "H:\\commoncrawl\\vertices.txt"
-  val save_path10k = "D:\\commoncrawl\\www10k_3\\"
-  val save_path200k = "D:\\commoncrawl\\www200k_3\\"
-  val save_path500k = "D:\\commoncrawl\\www500k_3\\"
-  val save_path1m = "D:\\commoncrawl\\www1m_3\\"
+  val save_path10k = "D:\\commoncrawl\\www10k\\"
+  val save_path200k = "D:\\commoncrawl\\www200k\\"
+  val save_path500k = "D:\\commoncrawl\\www500k\\"
+  val save_path1m = "D:\\commoncrawl\\www1m\\"
+  val save_path5m = "D:\\commoncrawl\\www5m\\"
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
       .setAppName("FastRPCommonCrawl")
-      .setMaster("local[8]")
+      .setMaster("local[*]")
       .set("spark.local.dir", "D:\\sparklocal\\")
       .set("spark.driver.memory", "16g")
       .set("spark.rdd.compress", "true")
@@ -92,6 +94,23 @@ object CommonCrawlDatasets {
 
     sc.getPersistentRDDs.foreach { case (_, rdd) => rdd.unpersist(true) }
 
+
+    println("Creating 5m subset")
+    sc.setJobDescription("Creating 5m subset")
+    val ccGraph5m = create_subset(sc, hc_limit = 5_000_000)
+
+    println("Num Vertices 5m:")
+    println(ccGraph5m.vertices.count())
+
+    println("Num edges 5m:")
+    println(ccGraph5m.edges.count())
+
+    println("Saving WWW-5M graph")
+    sc.setJobDescription("Saving WWW-5M graph")
+    save_graph(ccGraph5m, save_path5m)
+
+    sc.getPersistentRDDs.foreach { case (_, rdd) => rdd.unpersist(true) }
+
     sc.stop()
   }
 
@@ -126,7 +145,10 @@ object CommonCrawlDatasets {
       .map(e => Edge(srcId = e.srcId, dstId = e.dstId, attr = 1.0))
       .distinct()
 
-    val ccGraph = Graph(filtered_processed_vertices, graph_edges)
+    val ccGraph = Graph(filtered_processed_vertices, graph_edges,
+      defaultVertexAttr = null.asInstanceOf[String],
+      edgeStorageLevel = StorageLevel.MEMORY_AND_DISK_SER,
+      vertexStorageLevel = StorageLevel.MEMORY_AND_DISK_SER)
       .filter(
         graph => {
           val degrees: VertexRDD[Int] = graph.degrees
@@ -146,7 +168,7 @@ object CommonCrawlDatasets {
   case class CommonCrawlEdges(srcId: Long, dstId: Long)
 
   def load_ranks(sc: SparkContext, hc_rank_limit: Long = 10000): RDD[Ranks] = {
-    sc.textFile(RANKS_PATH, sc.defaultParallelism * 2)
+    sc.textFile(RANKS_PATH)
       .zipWithIndex()
       .filter(sl => sl._2 != 0)
       .keys
@@ -162,7 +184,7 @@ object CommonCrawlDatasets {
   }
 
   def load_edges(sc: SparkContext): RDD[CommonCrawlEdges] = {
-    sc.textFile(EDGES_PATH, sc.defaultParallelism*2)
+    sc.textFile(EDGES_PATH)
       .map(s => {
         val splits = s.split("\t")
         CommonCrawlEdges(srcId = splits(0).toLong, dstId = splits(1).toLong)
@@ -170,7 +192,7 @@ object CommonCrawlDatasets {
   }
 
   def load_vertices(sc: SparkContext): RDD[CommonCrawlVertices] = {
-    sc.textFile(VERTICES_PATH, sc.defaultParallelism * 2)
+    sc.textFile(VERTICES_PATH)
       .map(s => {
         val splits = s.split("\t")
         CommonCrawlVertices(id = splits(0).toLong, host = splits(1))
@@ -188,7 +210,12 @@ object CommonCrawlDatasets {
     if (undirected) {
       edges = edges.union(edges.map(e => Edge(e.dstId, e.srcId, e.attr)))
     }
-    Graph(vertices.repartition(numPartitions), edges.repartition(numPartitions))
+
+    Graph(vertices.repartition(numPartitions),
+      edges.repartition(numPartitions),
+      defaultVertexAttr = null.asInstanceOf[VD],
+      edgeStorageLevel = StorageLevel.MEMORY_AND_DISK_SER,
+      vertexStorageLevel = StorageLevel.MEMORY_AND_DISK_SER)
       .partitionBy(PartitionStrategy.EdgePartition2D, numPartitions)
   }
 
