@@ -1,0 +1,5 @@
+package CompanyKG
+
+object CompanyKGFastRP {
+
+}

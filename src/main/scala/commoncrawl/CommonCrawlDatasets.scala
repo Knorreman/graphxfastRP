@@ -147,8 +147,8 @@ object CommonCrawlDatasets {
 
     val ccGraph = Graph(filtered_processed_vertices, graph_edges,
       defaultVertexAttr = null.asInstanceOf[String],
-      edgeStorageLevel = StorageLevel.MEMORY_AND_DISK_SER,
-      vertexStorageLevel = StorageLevel.MEMORY_AND_DISK_SER)
+      edgeStorageLevel = StorageLevel.MEMORY_AND_DISK,
+      vertexStorageLevel = StorageLevel.MEMORY_AND_DISK)
       .filter(
         graph => {
           val degrees: VertexRDD[Int] = graph.degrees
@@ -212,10 +212,10 @@ object CommonCrawlDatasets {
     }
 
     Graph(vertices.repartition(numPartitions),
-      edges.repartition(numPartitions),
-      defaultVertexAttr = null.asInstanceOf[VD],
-      edgeStorageLevel = StorageLevel.MEMORY_AND_DISK_SER,
-      vertexStorageLevel = StorageLevel.MEMORY_AND_DISK_SER)
+        edges.repartition(numPartitions),
+        defaultVertexAttr = null.asInstanceOf[VD],
+        edgeStorageLevel = StorageLevel.MEMORY_ONLY,
+        vertexStorageLevel = StorageLevel.MEMORY_ONLY)
       .partitionBy(PartitionStrategy.EdgePartition2D, numPartitions)
   }
 
