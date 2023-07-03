@@ -6,7 +6,6 @@ import fastp.FastRP.{FastRPMessage, FastRPVertex, addVectors, cosineDistance, fa
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{Graph, VertexId, VertexRDD}
 import org.apache.spark.mllib.classification.SVMWithSGD
-import org.apache.spark.mllib.clustering.{BisectingKMeans, DistanceMeasure}
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.feature.StandardScaler
 import org.apache.spark.mllib.linalg.Vectors
@@ -29,7 +28,7 @@ object CommonCrawlFastRP {
       .setAppName("FastRPCommonCrawl")
       .setMaster("local[*]")
       .set("spark.local.dir", "D:\\sparklocal\\")
-      .set("spark.driver.memory", "32g")
+      .set("spark.driver.memory", "45g")
       .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[Ranks], classOf[CommonCrawlVertices], classOf[CommonCrawlEdges], classOf[Array[Double]],
@@ -38,20 +37,17 @@ object CommonCrawlFastRP {
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
-    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path10k, numPartitions = 32)
+    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path200k, numPartitions = 64)
 
     println("www10k vertices:")
     println(graph10k.vertices.count())
     println("www10k edges:")
     println(graph10k.edges.count())
 
-    val weights = Array(0.0, 0.1, 1.0, 1.0, 0.25)
-    val fastRP10k: Graph[Array[Double], Double] = fastRP(graph10k, 512, weights).cache()
+    val weights: Array[Double] = Array(0.0, 0.0, 1.0, -1.0, 0.25)
+    val fastRP10k: Graph[Array[Double], Double] = fastRP(graph10k, 512, weights)
 
-    println("counting fastRP vertices")
-    fastRP10k.vertices.count()
-
-    val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2.map(_.toDouble))))
+    val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2)))
     println(stats.max.toString)
     println(stats.min.toString)
     println(stats.variance.toString)
@@ -72,7 +68,7 @@ object CommonCrawlFastRP {
     val dCount = normedVertexVectors.map(_._2.toSeq).distinct().count()
     println("distinct arrays " + dCount)
 
-    classify_website(normedVertexVectors.mapValues(_.map(_.toDouble)), graph10k.vertices)
+    classify_website(normedVertexVectors, graph10k.vertices)
 
     println("query")
     val query_id = graph10k.vertices.map(_.swap)
