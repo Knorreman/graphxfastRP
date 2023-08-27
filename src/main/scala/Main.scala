@@ -1,4 +1,4 @@
-import fastp.FastRP.fastRP
+import fastp.FastRP.{fastRPAM, fastRPPregel}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.graphx.{Edge, EdgeContext, EdgeDirection, EdgeTriplet, Graph, PartitionStrategy, VertexId, VertexRDD}
 import org.apache.spark.mllib.classification.{LogisticRegressionWithLBFGS, NaiveBayes, SVMModel, SVMWithSGD}
@@ -69,7 +69,7 @@ object Main {
 //      .foreach(println)
 
     val weights = Array(0.0, 0.0, 1.0, 1.0)
-    val twRPGraph = fastRP(tw_graph, 32, weights)
+    val twRPGraph = fastRPAM(tw_graph, 32, weights)
 
     twRPGraph.vertices
       .mapValues(x => x.mkString("Array(", ", ", ")"))

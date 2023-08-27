@@ -2,7 +2,7 @@ package commoncrawl
 
 import commoncrawl.CommonCrawlDatasets.{CommonCrawlEdges, CommonCrawlVertices, Ranks, save_path10k, save_path1m, save_path200k, save_path500k}
 import dev.ludovic.netlib.blas.BLAS
-import fastp.FastRP.{FastRPMessage, FastRPVertex, addVectors, cosineDistance, fastRP, query_knn}
+import fastp.FastRP.{FastRPAMMessage, FastRPAMVertex, FastRPMessage, FastRPVertex, addVectors, cosineDistance, fastRPAM, fastRPPregel, query_knn}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{Graph, VertexId, VertexRDD}
 import org.apache.spark.mllib.classification.SVMWithSGD
@@ -29,23 +29,22 @@ object CommonCrawlFastRP {
       .setMaster("local[*]")
       .set("spark.local.dir", "D:\\sparklocal\\")
       .set("spark.driver.memory", "45g")
-      .set("spark.rdd.compress", "true")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .registerKryoClasses(Array(classOf[Ranks], classOf[CommonCrawlVertices], classOf[CommonCrawlEdges], classOf[Array[Double]],
-        classOf[FastRPVertex], classOf[FastRPMessage]))
+        classOf[FastRPVertex], classOf[FastRPMessage], classOf[FastRPAMMessage], classOf[FastRPAMVertex]))
 
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
-    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path200k, numPartitions = 64)
+    val graph10k: Graph[String, Double] = CommonCrawlDatasets.load_graph[String, Double](sc, save_path10k, numPartitions = 16)
 
     println("www10k vertices:")
     println(graph10k.vertices.count())
     println("www10k edges:")
     println(graph10k.edges.count())
 
-    val weights: Array[Double] = Array(0.0, 0.0, 1.0, -1.0, 0.25)
-    val fastRP10k: Graph[Array[Double], Double] = fastRP(graph10k, 512, weights)
+    val weights: Array[Double] = Array(0.0, 0.0, 1.0, 1.0, 0.5, 0.1, 0.025)
+    val fastRP10k: Graph[Array[Double], Double] = fastRPAM(graph10k, 256, weights, r0=0.0001)
 
     val stats = Statistics.colStats(fastRP10k.vertices.map(x => Vectors.dense(x._2)))
     println(stats.max.toString)
@@ -124,20 +123,17 @@ object CommonCrawlFastRP {
     query_website("org.scikit-learn", graph10k.vertices, normedVertexVectors)
     println ("query18")
     query_website("org.tensorflow", graph10k.vertices, normedVertexVectors)
-    println("query19")
-    query_website("org.pytorch", graph10k.vertices, normedVertexVectors)
-
 
   }
 
   def query_website(site: String,
                     vertices: VertexRDD[String],
-                    fastRPvertices: VertexRDD[Array[Double]]): Unit = {
+                    fastRPVertices: VertexRDD[Array[Double]]): Unit = {
 
     val query_id = vertices.map(_.swap)
       .lookup(site).head
-    val query_vector = fastRPvertices.lookup(query_id).head
-    query_knn(fastRPvertices, vertices, 10, query_vector)
+    val query_vector = fastRPVertices.lookup(query_id).head
+    query_knn(fastRPVertices, vertices, 10, query_vector)
   }
 
   def query_all_websites(vertices: VertexRDD[String],
