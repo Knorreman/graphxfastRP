@@ -216,7 +216,7 @@ object CommonCrawlDatasets {
         defaultVertexAttr = null.asInstanceOf[VD],
         edgeStorageLevel = StorageLevel.MEMORY_ONLY,
         vertexStorageLevel = StorageLevel.MEMORY_ONLY)
-      .partitionBy(PartitionStrategy.EdgePartition2D, numPartitions)
+      .partitionBy(PartitionStrategy.EdgePartition1D, numPartitions)
   }
 
 }
