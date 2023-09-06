@@ -1,7 +1,7 @@
 package CompanyKG
 
 import fastp.FastRP.{FastRPAMMessage, FastRPAMVertex, FastRPMessage, FastRPVertex, euclideanDistance, fastRPAM, fastRPPregel}
-import org.apache.spark.graphx.{Edge, Graph, PartitionStrategy}
+import org.apache.spark.graphx.{Edge, Graph, GraphXUtils, PartitionStrategy}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{SparkConf, SparkContext}
@@ -22,21 +22,29 @@ object CompanyKGFastRP {
 
     val conf = new SparkConf()
       .setAppName("FastRPKG")
-      .setMaster("local[10]")
-      .set("spark.local.dir", "H:\\sparklocal\\")
+      .setMaster("local[13]")
+      .set("spark.local.dir", "D:\\sparklocal\\")
       .set("spark.driver.memory", "50g")
+      .set("spark.executor.memory", "50g")
+      .set("spark.memory.fraction", "0.85")
+      .set("spark.memory.storageFraction", "0.4")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "4g")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .set("spark.graphx.pregel.checkpointInterval", "1")
       .set("spark.cleaner.referenceTracking.cleanCheckpoints", "true")
       .registerKryoClasses(Array(classOf[Array[Double]], classOf[Array[Float]],
+        classOf[Vector[Double]], classOf[Vector[Object]], classOf[String],
         classOf[FastRPVertex], classOf[FastRPMessage], classOf[FastRPAMMessage], classOf[FastRPAMVertex]))
+
+    GraphXUtils.registerKryoClasses(conf)
 
     val sc = new SparkContext(conf)
     sc.setLogLevel("WARN")
 
     sc.setCheckpointDir(checkpoint_dir)
 
-    val path = ada2_path
+    val path = msbert_path
     val graph = load_kg_graph(sc, path)
 
     println("Edges: ")
@@ -45,34 +53,44 @@ object CompanyKGFastRP {
     println("Vertices: ")
     println(graph.vertices.count())
 
-    val d = graph.vertices.values.first().length
+    val initVectorOrNot: Boolean = true
+//    val d = graph.vertices.values.first().length
+    val d = if (!initVectorOrNot) 8 else graph.vertices.values.first().length
     println("Number of features: " + d)
+    graph.vertices.checkpoint()
+    graph.edges.checkpoint()
 
-    val weights = Array(1.0, 1.0, 1.0)
-    val fastRPGraph: Graph[Array[Double], Double] = fastRPAM[Array[Double]](graph, dimensions = d, weights = weights, r0 = 1.0)
+    val weights = Array(0.75, 0.5, 0.25)
+    val fastRPGraph: Graph[Array[Double], Double] = fastRPAM[Array[Double]](graph,
+      dimensions = d,
+      weights = weights,
+      r0 = 1.0,
+      initOrNot = initVectorOrNot)
 
-    fastRPGraph.checkpoint()
+    fastRPGraph.vertices.checkpoint()
 
     fastRPGraph.vertices
       .sortByKey(ascending = true)
-      .take(5)
+      .take(10)
       .foreach(x => println(x._1, x._2.mkString("Array(", ", ", ")")))
 
+    val extraString = if (initVectorOrNot) s"_fastRP_${weights.mkString("(", "_", ")")}."
+      else "_" + d + s"_noInit_fastRP_${weights.mkString("(", "_", ")")}."
+
     fastRPGraph.vertices
-      .mapValues(_.mkString(" "))
       .coalesce(1)
+      .mapValues(_.mkString(" "))
       .sortByKey(ascending = true)
       .values
-      .saveAsTextFile(path.replace(".", "_fastRP."))
+      .saveAsTextFile(path.replace(".", extraString))
 
       println("Saving done!")
     sc.stop(0)
   }
 
-  def load_kg_graph(sc: SparkContext, path: String): Graph[Array[Double], Double] = {
+  def load_kg_graph(sc: SparkContext, path: String, undirected: Boolean = true): Graph[Array[Double], Double] = {
 
-    val numPartitions: Int = sc.defaultParallelism * 10
-    val vertex_features = sc.textFile(path, numPartitions)
+    val vertex_features = sc.textFile(path)
       .zipWithIndex()
       .map(_.swap)
 
@@ -81,13 +99,17 @@ object CompanyKGFastRP {
         arr_str.split(" ").map(_.toDouble)
       )
 
+    val numPartitions: Int = vertices.getNumPartitions
     val edges = sc.textFile(edges_path, numPartitions)
 
-    val edges_parsed: RDD[Edge[Double]] = edges
+    var edges_parsed: RDD[Edge[Double]] = edges
       .map(_.split(" "))
       .map(_.map(_.toLong))
       .map(x => (x(0), x(1)))
       .map(e => Edge(e._1, e._2, 1.0))
+
+    // Make the graph undirected
+    edges_parsed = if (undirected) edges_parsed.union(edges_parsed.map(e => Edge(e.dstId, e.srcId, e.attr))) else edges_parsed
 
     Graph(vertices, edges_parsed,
         defaultVertexAttr = null.asInstanceOf[Array[Double]],

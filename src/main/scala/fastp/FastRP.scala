@@ -6,32 +6,32 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{EdgeContext, EdgeDirection, EdgeTriplet, Graph, PartitionStrategy, TripletFields, VertexId, VertexRDD}
 import org.apache.spark.rdd.RDD
 
+import scala.Option
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 
 object FastRP {
   private lazy val blas: BLAS = BLAS.getInstance()
 
-  def fastRPAM[A](graph: Graph[A, Double], dimensions: Int, weights: Array[Double], sparsity: Int = 3, r0: Double = 0.0): Graph[Array[Double], Double] = {
+  def fastRPAM[A](graph: Graph[A, Double], dimensions: Int, weights: Array[Double], sparsity: Int = 3, r0: Double = 0.0, initOrNot: Boolean = true): Graph[Array[Double], Double] = {
 
-    val initializedGraph: Graph[Array[Double], Double] = createInitialVector(graph, sparsity, dimensions)
+    val initializedGraph: Graph[Array[Double], Double] = createInitialVector(graph, sparsity, dimensions, initOrNot)
 
     fastRPAMImpl(initializedGraph, weights, r0)
   }
 
-  def fastRPPregel[A](graph: Graph[A, Double], dimensions: Int, weights: Array[Double], sparsity: Int = 3, r0: Double = 0.0): Graph[Array[Double], Double] = {
+  def fastRPPregel[A](graph: Graph[A, Double], dimensions: Int, weights: Array[Double], sparsity: Int = 3, r0: Double = 0.0, initOrNot: Boolean = true): Graph[Array[Double], Double] = {
 
-    val initializedGraph: Graph[Array[Double], Double] = createInitialVector(graph, sparsity, dimensions)
+    val initializedGraph: Graph[Array[Double], Double] = createInitialVector(graph, sparsity, dimensions, initOrNot)
 
     fastRPPregelImpl(initializedGraph, dimensions, weights, r0)
   }
 
-  private def createInitialVector[A](graph: Graph[A, Double], sparsity: Int, dimensions: Int): Graph[Array[Double], Double] = {
+  private def createInitialVector[A](graph: Graph[A, Double], sparsity: Int, dimensions: Int, initOrNot: Boolean = true): Graph[Array[Double], Double] = {
     val coeff = math.sqrt(sparsity)
     val initializedGraph: Graph[Array[Double], Double] = graph.mapVertices((id, v) => {
-
       val initArray: Array[Double] = v match {
-        case arr: Array[Double] => arr
+        case arr: Array[Double] if initOrNot => arr
         case _ =>
           val random = new Random(id)
           val seeds = generateSparseSeedBLAS(dimensions, coeff, sparsity, random)
@@ -87,43 +87,57 @@ object FastRP {
       .mapVertices((_, v) => {
         v.aggrEmbedding
       })
+      .mapVertices((_, v) => v.toArray)
   }
 
   private def fastRPAMImpl[A](initializedGraph: Graph[Array[Double], Double], weights: Array[Double], r0: Double = 0.0): Graph[Array[Double], Double] = {
 
     val partialResults: ArrayBuffer[(Graph[Array[Double], Double], Double)] = ArrayBuffer()
     var iterGraph: Graph[Array[Double], Double] = initializedGraph
+
     if (r0 != 0.0) {
+      iterGraph.edges.checkpoint()
+      iterGraph.vertices.checkpoint()
       partialResults += Tuple2(iterGraph, r0)
     }
 
     for (weight <- weights) {
       val messages: VertexRDD[FastRPAMMessage] = iterGraph
         .mapVertices((_, v) => FastRPAMVertex(v))
-        .aggregateMessages[FastRPAMMessage](sendMsg,
-          mergeMsg,
-          TripletFields.Src)
+        .aggregateMessages[FastRPAMMessage](sendMsg, mergeMsg, TripletFields.Src)
 
-      val _vector : VertexRDD[Array[Double]] = messages
+      val scaledMessages: VertexRDD[Array[Double]] = messages
         .mapValues(v => multiplyVectorByScalar(v.vector, 1.0 / v.degreeCount))
 
-      iterGraph = iterGraph.joinVertices(_vector)((_, _, vector) => vector)
-      iterGraph.checkpoint()
+      iterGraph = iterGraph.outerJoinVertices(scaledMessages) {
+        case (_, _, Some(vector)) => vector
+        case (_, firstVector, None) => firstVector
+      }
+
+      iterGraph.edges.checkpoint()
+      iterGraph.vertices.checkpoint()
       partialResults += Tuple2(iterGraph, weight)
 
     }
 
     partialResults
       .map(tpl => tpl._1.mapVertices((_, v) => multiplyVectorByScalar(normalize(v), tpl._2)))
-      .reduceLeft((a, b) => a.joinVertices(b.vertices)((_, v1, v2) => addVectors(v1, v2)))
+      .reduceLeft((a, b) => a.outerJoinVertices(b.vertices) {
+          case (_, v1, Some(v2)) => addVectors(v1, v2)
+          case (_, v1, _) => v1
+        }
+      ).mapVertices((_, v) => v.toArray)
   }
 
-  def sendMsg(edge: EdgeContext[FastRPAMVertex, Double, FastRPAMMessage]): Unit = {
-    val vectorScaled = multiplyVectorByScalar(edge.srcAttr.vector, edge.attr)
-    edge.sendToDst(FastRPAMMessage(vectorScaled, 1))
+  private def sendMsg(edge: EdgeContext[FastRPAMVertex, Double, FastRPAMMessage]): Unit = {
+    val srcVectorScaled = multiplyVectorByScalar(edge.srcAttr.vector, edge.attr)
+//    val dstVectorScaled = multiplyVectorByScalar(edge.dstAttr.vector, edge.attr)
+
+    edge.sendToDst(FastRPAMMessage(srcVectorScaled, 1))
+//    edge.sendToSrc(FastRPAMMessage(dstVectorScaled, 1))
   }
 
-  def mergeMsg(msg1: FastRPAMMessage, msg2: FastRPAMMessage): FastRPAMMessage = {
+  private def mergeMsg(msg1: FastRPAMMessage, msg2: FastRPAMMessage): FastRPAMMessage = {
     FastRPAMMessage(addVectors(msg1.vector, msg2.vector), msg1.degreeCount + msg2.degreeCount)
   }
 
@@ -131,8 +145,7 @@ object FastRP {
     val queryBc = vectorRDD.sparkContext.broadcast(query_array)
 
     vectorRDD.mapValues(arr => {
-        val dist = cosineDistance(arr, queryBc.value)
-        dist
+        cosineDistance(arr, queryBc.value)
       })
       .join(domains)
       .map(tpl => (tpl._2._1, (tpl._1, tpl._2._2)))
@@ -175,59 +188,17 @@ object FastRP {
   }
 
   def normalize(v: Array[Double]): Array[Double] = {
-    val norm = blas.dnrm2(v.length, v, 1)
-    val scale = if (norm == 0) 1.0 else 1.0 / norm
-    blas.dscal(v.length, scale, v, 1)
-    v
+    val sqrSum = v.map(a => a*a).sum
+    v.map(_ / math.sqrt(sqrSum))
   }
-
-//  def normalize(v: Array[_]): Array[_] = {
-//    v match {
-//      case v: Array[Double] => {
-//        val norm = math.sqrt(v.map(a => a * a).sum)
-//        v.map(_ / norm)
-//      }
-//      case v: Array[Float] => {
-//        val norm = math.sqrt(v.map(a => a * a).sum)
-//        v.map(_ / norm)
-//      }
-//    }
-//  }
-
-//  def addVectors(a: Array[Double], b: Array[Double]): Array[Double] = {
-//      val bcopy = b.clone()
-//      blas.daxpy(a.length, 1.0, a, 1, bcopy, 1)
-//      bcopy
-//  }
 
   def addVectors(a: Array[Double], b: Array[Double]): Array[Double] = {
-    a.zip(b).map { case (x, y) => (x + y) }
-//    (a, b) match {
-//      case (x: Array[Double], y: Array[Double]) => x.zip(y).map(w => w._1 + w._2)
-//      case (x: Array[Float], y: Array[Float]) => x.zip(y).map(w => w._1 + w._2)
-//      case (x: Array[Float], y: Array[Double]) => x.zip(y).map(w => w._1 + w._2).map(_.toDouble)
-//      case (x: Array[Double], y: Array[Float]) => x.zip(y).map(w => w._1 + w._2).map(_.toDouble)
-//      case _ => throw new IllegalArgumentException("Arrays must be both Double or both Float")
-//    }
-  }
-//
-  def multiplyVectorByScalar(v: Array[Double], scalar: Double): Array[Double] = {
-    v.map(_ * scalar)
-//    val vcopy = v.clone()
-//    blas.dscal(v.length, scalar, vcopy, 1)
-//    vcopy
+    a.zip(b).map { case (x, y) => x + y }
   }
 
-  // Trying to handle Doubles and Floats at the same time
-//  def multiplyVectorByScalar(v: Array[_], scalar: _): Array[_] = {
-//    (v, scalar) match {
-//      case (v: Array[Double], scalar: Double) => v.map(_ * scalar)
-//      case (v: Array[Float], scalar: Float) => v.map(_ * scalar)
-//      case (v: Array[Float], scalar: Double) => v.map(_ * scalar)
-//      case (v: Array[Double], scalar: Float) => v.map(_ * scalar)
-//      case _ => throw new IllegalArgumentException("Arrays must be both Double or both Float")
-//    }
-//  }
+  def multiplyVectorByScalar(v: Array[Double], scalar: Double): Array[Double] = {
+    v.map(_ * scalar)
+  }
 
   def generateSparseSeedBLAS(dimensions: Int, coeff: Double, sparsity: Int, random: Random): Array[Double] = {
 
