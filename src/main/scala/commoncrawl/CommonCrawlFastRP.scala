@@ -56,8 +56,9 @@ object CommonCrawlFastRP {
     val statsBc = sc.broadcast(stats)
 
     val normedVertexVectors = fastRP10k
-      .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_.toFloat)))
-      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2))).vertices
+      .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_.toDouble)))
+      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2)))
+      .vertices
 
     normedVertexVectors
       .mapValues(x => x.mkString("Array(", ", ", ")"))
