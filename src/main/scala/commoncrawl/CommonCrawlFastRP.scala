@@ -2,7 +2,7 @@ package commoncrawl
 
 import commoncrawl.CommonCrawlDatasets.{CommonCrawlEdges, CommonCrawlVertices, Ranks, save_path10k, save_path1m, save_path200k, save_path500k}
 import dev.ludovic.netlib.blas.BLAS
-import fastp.FastRP.{FastRPAMMessage, FastRPAMVertex, FastRPMessage, FastRPVertex, addVectors, cosineDistance, fastRPAM, fastRPPregel, query_knn}
+import fastp.FastRP.{FastRPAMMessage, FastRPAMVertex, FastRPMessage, FastRPVertex, cosineDistance, fastRPAM, fastRPPregel, query_knn}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{Graph, VertexId, VertexRDD}
 import org.apache.spark.mllib.classification.SVMWithSGD
@@ -56,8 +56,17 @@ object CommonCrawlFastRP {
     val statsBc = sc.broadcast(stats)
 
     val normedVertexVectors = fastRP10k
-      .mapVertices((_, x) => addVectors(x, statsBc.value.mean.toArray.map(-_.toDouble)))
-      .mapVertices((_, x) => x.zip(statsBc.value.variance.toArray).map(x => x._1/Math.sqrt(x._2)))
+      .mapVertices { (_, x) =>
+        val mean = statsBc.value.mean.toArray
+        val variance = statsBc.value.variance.toArray
+        val result = new Array[Double](x.length)
+        var i = 0
+        while (i < x.length) {
+          result(i) = (x(i) - mean(i)) / Math.sqrt(variance(i))
+          i += 1
+        }
+        result
+      }
       .vertices
 
     normedVertexVectors
@@ -65,65 +74,37 @@ object CommonCrawlFastRP {
       .take(10)
       .foreach(println)
 
-    val dCount = normedVertexVectors.map(_._2.toSeq).distinct().count()
-    println("distinct arrays " + dCount)
-
     classify_website(normedVertexVectors, graph10k.vertices)
 
-    println("query")
-    val query_id = graph10k.vertices.map(_.swap)
-      .lookup("com.nytimes").head
-    val query_vector = normedVertexVectors.lookup(query_id).head
-    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector)
+    // Collect vertex name→id and id→vector maps once to avoid 26 separate RDD scan jobs
+    val vertexNameToId: Map[String, VertexId] =
+      graph10k.vertices.map { case (id, name) => (name, id) }.collectAsMap().toMap
+    val vertexIdToVector: Map[VertexId, Array[Double]] =
+      normedVertexVectors.collectAsMap().toMap
 
-    println("query2")
-    val query_id2 = graph10k.vertices.map(_.swap)
-      .lookup("com.arsenal").head
-    val query_vector2 = normedVertexVectors.lookup(query_id2).head
-    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector2)
+    def queryLocal(label: String, site: String): Unit = {
+      println(label)
+      val qVec = vertexIdToVector(vertexNameToId(site))
+      query_knn(normedVertexVectors, graph10k.vertices, 10, qVec)
+    }
 
-    println("query3")
-    val query_id3 = graph10k.vertices.map(_.swap)
-      .lookup("com.delta").head
-    val query_vector3 = normedVertexVectors.lookup(query_id3).head
-    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector3)
-
-    println("query4")
-    val query_id4 = graph10k.vertices.map(_.swap)
-      .lookup("com.latimes").head
-    val query_vector4 = normedVertexVectors.lookup(query_id4).head
-    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector4)
-
-    println("query5")
-    val query_id5 = graph10k.vertices.map(_.swap)
-      .lookup("com.mckinsey").head
-    val query_vector5 = normedVertexVectors.lookup(query_id5).head
-    query_knn(normedVertexVectors, graph10k.vertices, 10, query_vector5)
-
-    println("query6")
-    query_website("com.wikihow", graph10k.vertices, normedVertexVectors)
-    println("query7")
-    query_website("com.hardrock", graph10k.vertices, normedVertexVectors)
-    println("query8")
-    query_website("com.renegadehealth", graph10k.vertices, normedVertexVectors)
-    println("query9")
-    query_website("com.google", graph10k.vertices, normedVertexVectors)
-    println("query11")
-    query_website("org.python", graph10k.vertices, normedVertexVectors)
-    println("query12")
-    query_website("com.twitter", graph10k.vertices, normedVertexVectors)
-    println("query13")
-    query_website("org.4chan", graph10k.vertices, normedVertexVectors)
-    println("query14")
-    query_website("com.apple", graph10k.vertices, normedVertexVectors)
-    println("query10")
-    query_website("org.scala-lang", graph10k.vertices, normedVertexVectors)
-    println("query16")
-    query_website("org.apache.spark", graph10k.vertices, normedVertexVectors)
-    println("query17")
-    query_website("org.scikit-learn", graph10k.vertices, normedVertexVectors)
-    println ("query18")
-    query_website("org.tensorflow", graph10k.vertices, normedVertexVectors)
+    queryLocal("query", "com.nytimes")
+    queryLocal("query2", "com.arsenal")
+    queryLocal("query3", "com.delta")
+    queryLocal("query4", "com.latimes")
+    queryLocal("query5", "com.mckinsey")
+    queryLocal("query6", "com.wikihow")
+    queryLocal("query7", "com.hardrock")
+    queryLocal("query8", "com.renegadehealth")
+    queryLocal("query9", "com.google")
+    queryLocal("query11", "org.python")
+    queryLocal("query12", "com.twitter")
+    queryLocal("query13", "org.4chan")
+    queryLocal("query14", "com.apple")
+    queryLocal("query10", "org.scala-lang")
+    queryLocal("query16", "org.apache.spark")
+    queryLocal("query17", "org.scikit-learn")
+    queryLocal("query18", "org.tensorflow")
 
   }
 
@@ -224,7 +205,7 @@ object CommonCrawlFastRP {
     val std = new StandardScaler(withMean = true, withStd = true)
 
     val scaler = std.fit(data.values.map(lp => lp.features))
-    val scaledData = data.mapValues(lp => LabeledPoint(lp.label, scaler.transform(lp.features)))
+    val scaledData = data.mapValues(lp => LabeledPoint(lp.label, scaler.transform(lp.features))).cache()
     val svm = new SVMWithSGD()
 
     // Train a RandomForest model.
@@ -237,7 +218,6 @@ object CommonCrawlFastRP {
     val maxBins = 32
 
     val splits = scaledData
-      .repartition(scaledData.getNumPartitions)
       .randomSplit(weights = Array(0.7, 0.3), seed = 42L)
 
     val train = splits(0).values.persist(StorageLevel.MEMORY_ONLY_SER)

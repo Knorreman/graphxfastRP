@@ -57,8 +57,6 @@ object CompanyKGFastRP {
 //    val d = graph.vertices.values.first().length
     val d = if (!initVectorOrNot) 8 else graph.vertices.values.first().length
     println("Number of features: " + d)
-    graph.vertices.checkpoint()
-    graph.edges.checkpoint()
 
     val weights = Array(0.75, 0.5, 0.25)
     val fastRPGraph: Graph[Array[Double], Double] = fastRPAM[Array[Double]](graph,
@@ -66,8 +64,6 @@ object CompanyKGFastRP {
       weights = weights,
       r0 = 1.0,
       initOrNot = initVectorOrNot)
-
-    fastRPGraph.vertices.checkpoint()
 
     fastRPGraph.vertices
       .sortByKey(ascending = true)
@@ -78,9 +74,7 @@ object CompanyKGFastRP {
       else "_" + d + s"_noInit_fastRP_${weights.mkString("(", "_", ")")}."
 
     fastRPGraph.vertices
-      .coalesce(1)
       .mapValues(_.mkString(" "))
-      .sortByKey(ascending = true)
       .values
       .saveAsTextFile(path.replace(".", extraString))
 
@@ -102,14 +96,16 @@ object CompanyKGFastRP {
     val numPartitions: Int = vertices.getNumPartitions
     val edges = sc.textFile(edges_path, numPartitions)
 
-    var edges_parsed: RDD[Edge[Double]] = edges
-      .map(_.split(" "))
-      .map(_.map(_.toLong))
-      .map(x => (x(0), x(1)))
-      .map(e => Edge(e._1, e._2, 1.0))
+    val edges_base: RDD[Edge[Double]] = edges.map { line =>
+      val parts = line.split(" ")
+      Edge(parts(0).toLong, parts(1).toLong, 1.0)
+    }
 
     // Make the graph undirected
-    edges_parsed = if (undirected) edges_parsed.union(edges_parsed.map(e => Edge(e.dstId, e.srcId, e.attr))) else edges_parsed
+    val edges_parsed: RDD[Edge[Double]] = if (undirected) {
+      val cached = edges_base.cache()
+      cached.union(cached.map(e => Edge(e.dstId, e.srcId, e.attr)))
+    } else edges_base
 
     Graph(vertices, edges_parsed,
         defaultVertexAttr = null.asInstanceOf[Array[Double]],

@@ -169,9 +169,7 @@ object CommonCrawlDatasets {
 
   def load_ranks(sc: SparkContext, hc_rank_limit: Long = 10000): RDD[Ranks] = {
     sc.textFile(RANKS_PATH)
-      .zipWithIndex()
-      .filter(sl => sl._2 != 0)
-      .keys
+      .mapPartitionsWithIndex { (idx, iter) => if (idx == 0) iter.drop(1) else iter }
       .map(s => {
         val splits = s.split("\t")
         Ranks(hc_pos = splits(0).toLong,
@@ -206,10 +204,11 @@ object CommonCrawlDatasets {
 
   def load_graph[VD: ClassTag, ED: ClassTag](sc: SparkContext, path: String, numPartitions: Int = 128, undirected: Boolean = true): Graph[VD, ED] = {
     val vertices = sc.objectFile[(VertexId, VD)](path + "\\vertices\\")
-    var edges = sc.objectFile[Edge[ED]](path + "\\edges\\")
-    if (undirected) {
-      edges = edges.union(edges.map(e => Edge(e.dstId, e.srcId, e.attr)))
-    }
+    val edgesBase = sc.objectFile[Edge[ED]](path + "\\edges\\")
+    val edges = if (undirected) {
+      val cached = edgesBase.cache()
+      cached.union(cached.map(e => Edge(e.dstId, e.srcId, e.attr)))
+    } else edgesBase
 
     Graph(vertices.repartition(numPartitions),
         edges.repartition(numPartitions),

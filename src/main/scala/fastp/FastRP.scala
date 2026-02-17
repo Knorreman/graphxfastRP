@@ -5,6 +5,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx.{EdgeContext, EdgeDirection, EdgeTriplet, Graph, PartitionStrategy, TripletFields, VertexId, VertexRDD}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
 
 import scala.Option
 import scala.collection.mutable.ArrayBuffer
@@ -84,20 +85,19 @@ object FastRP {
         activeDirection = EdgeDirection.Either)(vprog, sendMsg, mergeMsg)
 
     finishedGraph
-      .mapVertices((_, v) => {
-        v.aggrEmbedding
-      })
-      .mapVertices((_, v) => v.toArray)
+      .mapVertices((_, v) => v.aggrEmbedding)
   }
 
   private def fastRPAMImpl[A](initializedGraph: Graph[Array[Double], Double], weights: Array[Double], r0: Double = 0.0): Graph[Array[Double], Double] = {
 
+    val checkpointInterval = 3
     val partialResults: ArrayBuffer[(Graph[Array[Double], Double], Double)] = ArrayBuffer()
     var iterGraph: Graph[Array[Double], Double] = initializedGraph
+    var iterationCount = 0
 
     if (r0 != 0.0) {
-      iterGraph.edges.checkpoint()
-      iterGraph.vertices.checkpoint()
+      iterGraph.vertices.persist(StorageLevel.MEMORY_AND_DISK_SER)
+      iterGraph.edges.persist(StorageLevel.MEMORY_AND_DISK_SER)
       partialResults += Tuple2(iterGraph, r0)
     }
 
@@ -109,15 +109,23 @@ object FastRP {
       val scaledMessages: VertexRDD[Array[Double]] = messages
         .mapValues(v => multiplyVectorByScalar(v.vector, 1.0 / v.degreeCount))
 
+      val prevGraph = iterGraph
       iterGraph = iterGraph.outerJoinVertices(scaledMessages) {
         case (_, _, Some(vector)) => vector
         case (_, firstVector, None) => firstVector
       }
 
-      iterGraph.edges.checkpoint()
-      iterGraph.vertices.checkpoint()
-      partialResults += Tuple2(iterGraph, weight)
+      iterGraph.vertices.persist(StorageLevel.MEMORY_AND_DISK_SER)
+      iterGraph.edges.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
+      iterationCount += 1
+      if (iterationCount % checkpointInterval == 0) {
+        iterGraph.vertices.checkpoint()
+        iterGraph.edges.checkpoint()
+      }
+
+      prevGraph.unpersist(blocking = false)
+      partialResults += Tuple2(iterGraph, weight)
     }
 
     partialResults
@@ -149,8 +157,7 @@ object FastRP {
       })
       .join(domains)
       .map(tpl => (tpl._2._1, (tpl._1, tpl._2._2)))
-      .sortByKey(ascending = true)
-      .take(k + 1)
+      .takeOrdered(k + 1)(Ordering.by(_._1))
       .foreach(println)
   }
 
@@ -188,16 +195,22 @@ object FastRP {
   }
 
   def normalize(v: Array[Double]): Array[Double] = {
-    val sqrSum = v.map(a => a*a).sum
-    v.map(_ / math.sqrt(sqrSum))
+    val result = v.clone()
+    val norm = blas.dnrm2(result.length, result, 1)
+    if (norm != 0.0) blas.dscal(result.length, 1.0 / norm, result, 1)
+    result
   }
 
   def addVectors(a: Array[Double], b: Array[Double]): Array[Double] = {
-    a.zip(b).map { case (x, y) => x + y }
+    val result = a.clone()
+    blas.daxpy(result.length, 1.0, b, 1, result, 1)
+    result
   }
 
   def multiplyVectorByScalar(v: Array[Double], scalar: Double): Array[Double] = {
-    v.map(_ * scalar)
+    val result = v.clone()
+    blas.dscal(result.length, scalar, result, 1)
+    result
   }
 
   def generateSparseSeedBLAS(dimensions: Int, coeff: Double, sparsity: Int, random: Random): Array[Double] = {
