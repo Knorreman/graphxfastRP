@@ -7,9 +7,9 @@ name: Scala CI
 
 on:
   push:
-    branches: [ "master", "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "master", "main" ]
+    branches: [ "master" ]
 
 permissions:
   contents: read
@@ -27,8 +27,7 @@ jobs:
         java-version: '11'
         distribution: 'temurin'
         cache: 'sbt'
-    - name: Install sbt
-      run: |
-        curl -fL https://github.com/sbt/sbt/releases/download/v1.8.2/sbt-1.8.2.tgz | tar xz -C /usr/local --strip-components=1
+    - name: Set up sbt
+      uses: sbt/setup-sbt@v1
     - name: Run tests
       run: sbt test
