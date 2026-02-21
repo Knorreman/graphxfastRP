@@ -87,9 +87,7 @@ object Main {
     val path = "D:\\ChromeDownloads\\twitch_gamers\\large_twitch_edges.csv"
 
     val edges = sc.textFile(path, sc.defaultParallelism)
-      .zipWithIndex()
-      .filter(x => x._2 != 0)
-      .keys
+      .mapPartitionsWithIndex { (idx, iter) => if (idx == 0) iter.drop(1) else iter }
       .map(x => {
         val spl = x.split(",")
         Edge(spl(0).toLong, spl(1).toLong, 1)
@@ -100,9 +98,7 @@ object Main {
   def load_twitch_features(sc: SparkContext): RDD[TwitchFeatures] = {
     val path = "D:\\ChromeDownloads\\twitch_gamers\\large_twitch_features.csv"
     sc.textFile(path)
-      .zipWithIndex()
-      .filter(x => x._2 != 0)
-      .keys
+      .mapPartitionsWithIndex { (idx, iter) => if (idx == 0) iter.drop(1) else iter }
       .map(x => {
         val splits = x.split(",")
         TwitchFeatures(views = splits(0).toInt,
@@ -129,7 +125,7 @@ object Main {
     val std = new StandardScaler(withMean = true, withStd = true)
 
     val scaler = std.fit(data.values.map(lp => lp.features))
-    val scaledData = data.mapValues(lp => LabeledPoint(lp.label, scaler.transform(lp.features)))
+    val scaledData = data.mapValues(lp => LabeledPoint(lp.label, scaler.transform(lp.features))).cache()
     val svm = new SVMWithSGD()
 
     svm.optimizer
@@ -153,7 +149,6 @@ object Main {
 
 
     val splits = scaledData
-      .repartition(scaledData.getNumPartitions)
       .randomSplit(weights = Array(0.7, 0.3), seed = 42L)
 
     val train = splits(0).persist(StorageLevel.MEMORY_ONLY_SER)
@@ -165,7 +160,8 @@ object Main {
 
 //    val model = RandomForest.trainClassifier(train.values, numClasses, categoricalFeaturesInfo,
 //      numTrees, featureSubsetStrategy, impurity, maxDepth, maxBins)
-    val predictionAndLabels = test.values.map(lp => (model.predict(lp.features), lp.label))
+    val predictionAndLabels = test.values.map(lp => (model.predict(lp.features), lp.label)).cache()
+    predictionAndLabels.count()
 
     val metrics = new BinaryClassificationMetrics(predictionAndLabels)
 
