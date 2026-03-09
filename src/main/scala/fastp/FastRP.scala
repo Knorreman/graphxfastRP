@@ -91,6 +91,7 @@ object FastRP {
   private def fastRPAMImpl[A](initializedGraph: Graph[Array[Double], Double], weights: Array[Double], r0: Double = 0.0): Graph[Array[Double], Double] = {
 
     val checkpointInterval = 3
+    val checkpointEnabled = initializedGraph.vertices.sparkContext.getCheckpointDir.nonEmpty
     val partialResults: ArrayBuffer[(Graph[Array[Double], Double], Double)] = ArrayBuffer()
     var iterGraph: Graph[Array[Double], Double] = initializedGraph
     var iterationCount = 0
@@ -119,7 +120,7 @@ object FastRP {
       iterGraph.edges.persist(StorageLevel.MEMORY_AND_DISK_SER)
 
       iterationCount += 1
-      if (iterationCount % checkpointInterval == 0) {
+      if (checkpointEnabled && iterationCount % checkpointInterval == 0) {
         iterGraph.vertices.checkpoint()
         iterGraph.edges.checkpoint()
       }
